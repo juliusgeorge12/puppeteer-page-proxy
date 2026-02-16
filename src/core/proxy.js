@@ -3,6 +3,9 @@ const CookieHandler = require("../lib/cookies");
 const {setHeaders, setAgent} = require("../lib/options");
 const type = require("../util/types");
 
+// New - Maintain own registry of event listeners page.eventsMap replacement
+let registeredListeners = new WeakMap();
+
 // Responsible for applying proxy
 const requestHandler = async (request, proxy, overrides = {}) => {
     // Reject non http(s) URI schemes
@@ -42,19 +45,25 @@ const requestHandler = async (request, proxy, overrides = {}) => {
     }
 };
 
-// For reassigning proxy of page
-const removeRequestListener = (page, listenerName) => {
-    const eventName = "request";
-    const listeners = page.eventsMap.get(eventName);
-    if (listeners) {
-        const i = listeners.findIndex((listener) => {
-            return listener.name === listenerName
-        });
-        listeners.splice(i, 1);
-        if (!listeners.length) {
-            page.eventsMap.delete(eventName);
-        }
+const removeRequestListener = (page, listener) => {
+    const listeners = registeredListeners.get(page) || [];
+    const index = listeners.indexOf(listener);
+    if (index > -1) {
+        page.removeListener("request", listener);
+        listeners.splice(index, 1);
     }
+    if (listeners.length === 0) {
+        registeredListeners.delete(page);
+    } else {
+        registeredListeners.set(page, listeners);
+    }
+};
+
+const addRequestListener = (page, listener) => {
+    const listeners = registeredListeners.get(page) || [];
+    listeners.push(listener);
+    registeredListeners.set(page, listeners);
+    page.on("request", listener);
 };
 
 const normalizeName = (name) => {
@@ -74,34 +83,42 @@ const normalizeName = (name) => {
 };
 
 const useProxyPer = {
-    // Call this if request object passed
     HTTPRequest: async (request, data) => {
-        let proxy, overrides;
-        // Separate proxy and overrides
-        if (type(data) === "object") {
-            if (Object.keys(data).length !== 0) {
-                proxy = data.proxy;
-                delete data.proxy;
-                overrides = data;
-            }
-        } else {proxy = data}
-        // Skip request if proxy omitted
-        if (proxy) {await requestHandler(request, proxy, overrides)}
-        else {request.continue(overrides)}
+        try{
+            let proxy, overrides;
+            // Separate proxy and overrides
+            if (type(data) === "object") {
+                if (Object.keys(data).length !== 0) {
+                    proxy = data.proxy;
+                    delete data.proxy;
+                    overrides = data;
+                }
+            } else {proxy = data}
+            // Skip request if proxy omitted
+            if (proxy) {await requestHandler(request, proxy, overrides)}
+            else {request.continue(overrides)}
+        }catch(error){
+            //ignore
+        }
     },
-
-    // Call this if page object passed
     CDPPage: async (page, proxy) => {
         await page.setRequestInterception(true);
-        const listener = "$ppp_requestListener";
-        removeRequestListener(page, listener);
-        const f = {[listener]: async (request) => {
+        const listenerName = "$ppp_requestListener";
+        // Remove existing listener if present
+        const existingListener = registeredListeners.get(page)?.find(l => l.name === listenerName);
+        if (existingListener) {
+            removeRequestListener(page, existingListener);
+        }
+        // Define a new listener
+        const listener = async (request) => {
             await requestHandler(request, proxy);
-        }};
-        if (proxy) {page.on("request", f[listener])}
-        else {await page.setRequestInterception(false)}
+        };
+        listener.name = listenerName; // Assign a name for easy identification
+        // Register the new listener
+        addRequestListener(page, listener);
     }
-}
+};
+
 
 // Main function
 const useProxy = async (target, data) => {

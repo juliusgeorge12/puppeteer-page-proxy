@@ -1,5 +1,5 @@
 {
-  "name": "puppeteer-page-proxy",
+  "name": "@juliusgeorge12/puppeteer-page-proxy",
   "description": "Fixed fork of Cuadrix/puppeteer-page-proxy. Additional Node.js module to use with 'puppeteer' for setting proxies per page basis.",
   "version": "1.3.0",
   "author": "Jlius George <julius.business12@gmail.com> (https://github.com/juliusgeorge12)",
