@@ -3,9 +3,9 @@ class CDP {
         this.page = page;
         this.client = null;
         this.ready = false;
-        this.maxRetries = 3;
+        this.maxRetries = 2; // fewer retries, faster
 
-        // IMPORTANT: Facebook swaps renderer frequently
+        // Reset on FB renderer swap or page close
         this.page.on('framenavigated', () => {
             this.ready = false;
         });
@@ -16,69 +16,50 @@ class CDP {
     }
 
     async init() {
-
-        // Always create fresh session
+        // Create a fresh CDP session
         this.client = await this.page.target().createCDPSession();
 
-        // Enable domains explicitly (required for cookies/network)
+        // Enable necessary domains
         await Promise.all([
-            this.client.send("Network.enable").catch(()=>{}),
-            this.client.send("Page.enable").catch(()=>{}),
-            this.client.send("Runtime.enable").catch(()=>{})
+            this.client.send("Network.enable").catch(() => {}),
+            this.client.send("Page.enable").catch(() => {}),
+            this.client.send("Runtime.enable").catch(() => {})
         ]);
 
         this.ready = true;
     }
 
+    // Ensure session ready, only init if not ready
     async ensure() {
-
-        if (!this.ready || !(await this.isHealthy())) {
+        if (!this.ready) {
             await this.init();
         }
     }
 
+    // Retry wrapper, only retries on failure
     async withRetry(operation) {
-
         let lastError;
-
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
-
             try {
-
                 await this.ensure();
                 return await operation();
-
             } catch (e) {
-
                 lastError = e;
-                this.ready = false;
-
+                this.ready = false; // force re-init next retry
                 if (attempt < this.maxRetries) {
-
-                    // exponential backoff
-                    await new Promise(r =>
-                        setTimeout(r, 120 * Math.pow(2, attempt - 1))
-                    );
-
+                    await new Promise(r => setTimeout(r, 50 * attempt)); // small backoff
                 }
             }
         }
-
         throw lastError;
     }
 
+    // Fast health check (call only when needed)
     async isHealthy() {
-
         if (!this.client) return false;
-
         try {
-
-            await this.client.send("Runtime.evaluate", {
-                expression: "1+1"
-            });
-
+            await this.client.send("Runtime.evaluate", { expression: "1+1" });
             return true;
-
         } catch {
             return false;
         }
@@ -87,58 +68,42 @@ class CDP {
     Network = {
 
         getCookies: async (urls) => {
-
             return this.withRetry(async () => {
-
                 const res = await this.client.send(
                     "Network.getCookies",
                     urls ? { urls } : {}
                 );
-
                 return res.cookies || [];
             });
         },
 
         setCookies: async (cookies) => {
-
+            if (!cookies || !cookies.length) return;
             return this.withRetry(async () => {
-
-                return this.client.send(
-                    "Network.setCookies",
-                    { cookies }
-                );
+                return this.client.send("Network.setCookies", { cookies });
             });
         },
 
         deleteCookies: async (cookies) => {
-
+            if (!cookies || !cookies.length) return;
             return this.withRetry(async () => {
-
-                for (const c of cookies) {
-
+                // batch deletes for speed
+                const ops = cookies.map(c => {
                     const params = { name: c.name };
-
-                    // DevTools requires EITHER url OR domain/path
-                    if (c.url) {
-                        params.url = c.url;
-                    } else {
+                    if (c.url) params.url = c.url;
+                    else {
                         params.domain = c.domain;
                         params.path = c.path || "/";
                     }
-
-                    await this.client.send(
-                        "Network.deleteCookies",
-                        params
-                    );
-                }
+                    return this.client.send("Network.deleteCookies", params);
+                });
+                await Promise.all(ops);
             });
         },
 
         clearAllCookies: async () => {
-
             const cookies = await this.Network.getCookies();
-
-            if (cookies.length) {
+            if (cookies.length > 0) {
                 await this.Network.deleteCookies(cookies);
             }
         }
