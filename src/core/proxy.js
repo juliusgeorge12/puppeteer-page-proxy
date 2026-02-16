@@ -57,6 +57,22 @@ const removeRequestListener = (page, listenerName) => {
     }
 };
 
+const normalizeName = (name) => {
+    if (!name) return name;
+
+    // normalize CDP casing differences:
+    // CDPPage / CdpPage / cdpPage → CDPPage
+    if (/cdp/i.test(name) && /page/i.test(name)) {
+        return "CDPPage";
+    }
+
+    if (/cdp/i.test(name) && /request/i.test(name)) {
+        return "HTTPRequest";
+    }
+
+    return name;
+};
+
 const useProxyPer = {
     // Call this if request object passed
     HTTPRequest: async (request, data) => {
@@ -89,7 +105,7 @@ const useProxyPer = {
 
 // Main function
 const useProxy = async (target, data) => {
-    useProxyPer[target.constructor.name](target, data);
+    useProxyPer[normalizeName(target.constructor.name)](target, data);
 };
 
 module.exports = useProxy;
